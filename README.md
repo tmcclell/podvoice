@@ -37,10 +37,13 @@ Just a clean CLI built on stable open-source components.
 * **Multiple logical speakers**
 * **Deterministic voice assignment**
 * **Single stitched output file**
-* **WAV or MP3 export**
+* **WAV or MP3 export** with quality presets
 * **Local-only inference**
-* **CPU-first (GPU optional)**
+* **CPU-first (GPU auto-detected)**
 * **Cross-platform support**
+* **Segment chunking** for long-text stability
+* **Language drift guardrails**
+* **Daemon mode** to amortize model load time
 
 ---
 
@@ -262,7 +265,7 @@ podvoice render examples/demo.md --play-stream
 ```
 
 ```bash
-podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 4 --stream-gap-ms 40
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer-ms 4000 --stream-gap-ms 40
 ```
 
 ```bash
@@ -278,12 +281,16 @@ podvoice render examples/demo.md --play --out output.wav
 | `--play`           | Play locally after render |
 | `--play-stream`    | Experimental live streaming playback during synthesis |
 | `--stream-gap-ms`  | Silence between streamed segments in ms (default: 80, must be `>= 0`) |
-| `--stream-prebuffer` | Segments to queue before stream playback starts (default: 3, must be `>= 0`) |
+| `--stream-prebuffer-ms` | Buffered audio duration (ms) before stream playback starts (default: 5000) |
 | `--no-cache`       | Disable segment cache     |
 | `--cache-dir`      | Override cache directory  |
 | `--language`, `-l` | XTTS language code        |
 | `--device`, `-d`   | `auto` (default), `cpu`, or `cuda` |
 | `--cpu-threads`    | CPU thread count for PyTorch (default: OS default) |
+| `--skip-normalize` | Skip audio normalization for faster draft renders |
+| `--quality`        | MP3 export quality preset: `draft` (96k), `final` (192k) |
+| `--max-segment-chars` | Max characters per TTS segment before chunking (default: 500) |
+| `--language-policy` | Language drift guardrail: `warn`, `fail`, or `sanitize` (default: disabled) |
 
 ## Playback modes
 
@@ -296,38 +303,36 @@ Podvoice supports two optional playback modes in addition to file export:
 * `--play-stream` (experimental)
 	* Starts playback while later segments are still being synthesized.
 	* Useful for long scripts when you want faster time-to-first-audio.
-	* `--stream-prebuffer` controls startup behavior:
+	* `--stream-prebuffer-ms` controls startup behavior (duration-based):
 		* Lower values start earlier but may be less smooth on slower machines.
 		* Higher values start later but can reduce underruns.
+		* A low-watermark guard inserts brief padding silence when the buffer runs low.
 	* `--stream-gap-ms` controls spacing between streamed chunks.
 		* Set to `0` for no extra fixed silence between chunks.
 		* Increase it if transitions sound abrupt.
 	* Timing and device behavior can vary by platform and backend.
-	* Tune pacing with:
-		* `--stream-prebuffer` to queue more segments before playback begins.
-		* `--stream-gap-ms` to reduce or increase fixed inter-segment silence.
 
 Validation notes:
 
-* Podvoice rejects negative values for `--stream-gap-ms` and `--stream-prebuffer`.
+* Podvoice rejects negative values for `--stream-gap-ms` and `--stream-prebuffer-ms`.
 * Podvoice rejects using `--play` and `--play-stream` together in the same command.
 
 Recommended stream tuning flow:
 
 ```bash
-podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 3 --stream-gap-ms 80
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer-ms 5000 --stream-gap-ms 80
 ```
 
 If playback starts too late, lower prebuffer:
 
 ```bash
-podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 1 --stream-gap-ms 80
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer-ms 2000 --stream-gap-ms 80
 ```
 
 If transitions feel abrupt, increase the stream gap:
 
 ```bash
-podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 3 --stream-gap-ms 120
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer-ms 5000 --stream-gap-ms 120
 ```
 
 Reproducibility note:
@@ -378,6 +383,77 @@ podvoice examples/demo.md --device cpu --cpu-threads 4
 
 ---
 
+## Segment chunking
+
+Long text segments can cause slow or stalled synthesis. Podvoice automatically
+splits segments that exceed `--max-segment-chars` (default: 500) at sentence
+boundaries, preserving speaker and emotion metadata:
+
+```bash
+podvoice render examples/podcastprep.md --max-segment-chars 300
+```
+
+Cache keys are computed per chunk, so caching remains deterministic.
+
+---
+
+## Language drift guardrails
+
+English renders can occasionally produce unintended non-English artifacts.
+Use `--language-policy` to detect and handle cross-language drift:
+
+```bash
+# Warn on drift (log only, no text changes)
+podvoice render examples/demo.md --language-policy warn
+
+# Fail if drift detected
+podvoice render examples/demo.md --language-policy fail
+
+# Auto-sanitize non-target characters
+podvoice render examples/demo.md --language-policy sanitize
+```
+
+Detection is local-only (Unicode range checks, no external APIs). Disabled by
+default for backward compatibility.
+
+---
+
+## Draft renders
+
+For fast iteration, skip normalization and use draft MP3 quality:
+
+```bash
+podvoice render examples/demo.md --out draft.mp3 --skip-normalize --quality draft
+```
+
+| Preset  | MP3 bitrate |
+| ------- | ----------- |
+| draft   | 96 kbps     |
+| (none)  | 128 kbps    |
+| final   | 192 kbps    |
+
+---
+
+## Daemon mode
+
+Avoid reloading the model on every run by starting a persistent daemon:
+
+```bash
+# Start (keeps XTTS loaded in memory)
+podvoice daemon start --language en --device auto
+
+# Check status
+podvoice daemon status
+
+# Stop
+podvoice daemon stop
+```
+
+The daemon serves a local HTTP API on `127.0.0.1:8473` by default.
+Use `--host` and `--port` to change binding.
+
+---
+
 ## Performance notes
 
 You may see warnings like:
@@ -421,6 +497,9 @@ podvoice/
 │   ├── parser.py     # Markdown parser
 │   ├── tts.py        # XTTS inference
 │   ├── audio.py      # Audio stitching
+│   ├── chunking.py   # Segment chunking
+│   ├── guardrails.py # Language drift detection
+│   ├── daemon.py     # Persistent model server
 │   └── utils.py
 │
 ├── examples/
