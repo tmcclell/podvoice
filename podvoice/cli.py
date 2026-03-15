@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.traceback import install as install_rich_traceback
 
+from .chunking import chunk_segments
 from .parser import parse_markdown_script, merge_adjacent_segments
 from .tts import XTTSVoiceEngine
 from .audio import build_podcast, export_audio, play_audio
@@ -100,6 +101,15 @@ def _synthesize_with_cache(
     return segment_audio, cache_hits
 
 
+_LOW_WATERMARK_MS = 2000
+"""Default low-watermark threshold in milliseconds.
+
+When the remaining buffered audio in the playback queue drops below this
+value the consumer thread inserts a brief silence pad so the producer has
+time to catch up — preventing an abrupt stall.
+"""
+
+
 def _stream_synthesize_and_play(
     engine: XTTSVoiceEngine,
     segments,
@@ -107,13 +117,21 @@ def _stream_synthesize_and_play(
     cache_dir: Path | None,
     collect_audio: bool,
     stream_gap_ms: int,
-    stream_prebuffer_segments: int,
+    stream_prebuffer_ms: int,
 ) -> tuple[list[AudioSegment], int]:
     """Synthesize and play segments as they complete.
 
     This mode is intentionally best-effort and is exposed as an
     experimental option because playback timing depends on local device
     behavior.
+
+    *Prebuffering* is now duration-based: playback starts once the
+    cumulative buffered audio reaches *stream_prebuffer_ms* milliseconds
+    (or when the last segment is queued, whichever comes first).
+
+    A *low-watermark* guard prevents audible stalls: if the remaining
+    buffered duration drops below ``_LOW_WATERMARK_MS`` the consumer
+    inserts brief padding silence to give the producer time to catch up.
     """
 
     resolved_cache_dir = cache_dir if cache_dir is not None else get_default_cache_dir()
@@ -130,14 +148,35 @@ def _stream_synthesize_and_play(
     playback_errors: list[PodvoiceError] = []
     gap = AudioSegment.silent(duration=stream_gap_ms)
     playback_start_event = threading.Event()
-    queued_count = 0
+
+    # Duration-based prebuffer tracking (shared with _play_worker via lock)
+    buffered_duration_ms: float = 0.0
+    buffer_lock = threading.Lock()
+    producer_done = threading.Event()
 
     def _play_worker() -> None:
+        nonlocal buffered_duration_ms
         playback_start_event.wait()
         while True:
             item = playback_queue.get()
             if item is None:
                 break
+
+            # Deduct the item's duration from the shared buffer total.
+            item_ms = len(item)  # pydub: len(seg) == duration in ms
+            with buffer_lock:
+                buffered_duration_ms -= item_ms
+
+            # Low-watermark: if buffer is running low and producer is
+            # still working, insert a small silence pad so synthesis
+            # has time to enqueue more audio.
+            if not producer_done.is_set():
+                with buffer_lock:
+                    remaining = buffered_duration_ms
+                if remaining < _LOW_WATERMARK_MS and not playback_queue.qsize():
+                    pad = AudioSegment.silent(duration=stream_gap_ms)
+                    item = item + pad
+
             try:
                 play_audio(item)
             except PodvoiceError as exc:
@@ -184,9 +223,12 @@ def _stream_synthesize_and_play(
 
                 playback_item = audio if idx == len(segments) - 1 else audio + gap
                 playback_queue.put(playback_item)
-                queued_count += 1
+
+                with buffer_lock:
+                    buffered_duration_ms += len(playback_item)
+
                 if (
-                    queued_count >= stream_prebuffer_segments
+                    buffered_duration_ms >= stream_prebuffer_ms
                     or idx == len(segments) - 1
                 ):
                     playback_start_event.set()
@@ -198,6 +240,7 @@ def _stream_synthesize_and_play(
             console.print(f"[red]Synthesis failed:[/] {exc}")
             raise typer.Exit(code=1)
         finally:
+            producer_done.set()
             playback_start_event.set()
             playback_queue.put(None)
             worker.join()
@@ -233,10 +276,21 @@ def render(
         help="Language code for XTTS v2 (e.g. en, de, fr).",
     ),
     device: str = typer.Option(
-        "cpu",
+        "auto",
         "--device",
         "-d",
-        help="Torch device to run on (default: 'cpu'). Use 'cuda' if you have a GPU.",
+        help=(
+            "Torch device to run on. 'auto' (default) selects CUDA when "
+            "available and falls back to CPU."
+        ),
+    ),
+    cpu_threads: int | None = typer.Option(
+        None,
+        "--cpu-threads",
+        help=(
+            "Number of CPU threads for PyTorch inference. "
+            "Defaults to PyTorch/OS default when not set."
+        ),
     ),
     no_cache: bool = typer.Option(
         False,
@@ -266,10 +320,31 @@ def render(
         "--stream-gap-ms",
         help="Silence between streamed segments in milliseconds (default: 80).",
     ),
+    stream_prebuffer_ms: int = typer.Option(
+        5000,
+        "--stream-prebuffer-ms",
+        help="Milliseconds of audio to buffer before starting stream playback (default: 5000).",
+    ),
     stream_prebuffer: int = typer.Option(
-        3,
+        -1,
         "--stream-prebuffer",
-        help="Number of segments to queue before starting stream playback.",
+        hidden=True,
+        help="Deprecated: use --stream-prebuffer-ms instead.",
+    ),
+    skip_normalize: bool = typer.Option(
+        False,
+        "--skip-normalize",
+        help="Skip audio normalization for faster draft renders.",
+    ),
+    quality: str | None = typer.Option(
+        None,
+        "--quality",
+        help="MP3 encoding quality preset: 'draft' (96k) or 'final' (192k).",
+    ),
+    max_segment_chars: int = typer.Option(
+        500,
+        "--max-segment-chars",
+        help="Maximum character length per segment before chunking (default: 500).",
     ),
 ) -> None:
     """Render a Markdown script into a single audio file."""
@@ -289,8 +364,26 @@ def render(
         console.print("[red]Error:[/] --stream-gap-ms must be >= 0.")
         raise typer.Exit(code=1)
 
-    if stream_prebuffer < 0:
+    if stream_prebuffer_ms < 0:
+        console.print("[red]Error:[/] --stream-prebuffer-ms must be >= 0.")
+        raise typer.Exit(code=1)
+
+    # Deprecated --stream-prebuffer: convert segment count to a rough ms
+    # estimate (assume ~1 700 ms per segment) and override.
+    if stream_prebuffer >= 0:
+        console.print(
+            "[yellow]Warning:[/] --stream-prebuffer is deprecated. "
+            "Use --stream-prebuffer-ms instead."
+        )
+        stream_prebuffer_ms = stream_prebuffer * 1700
+    elif stream_prebuffer < -1:
         console.print("[red]Error:[/] --stream-prebuffer must be >= 0.")
+        raise typer.Exit(code=1)
+
+    if quality is not None and quality not in {"draft", "final"}:
+        console.print(
+            "[red]Error:[/] --quality must be 'draft' or 'final'."
+        )
         raise typer.Exit(code=1)
 
     should_export = out is not None
@@ -325,6 +418,7 @@ def render(
         raise typer.Exit(code=1)
 
     segments = merge_adjacent_segments(segments)
+    segments = chunk_segments(segments, max_chars=max_segment_chars)
 
     if not segments:
         console.print("[red]Script did not contain any speaker segments.[/]")
@@ -337,7 +431,9 @@ def render(
         f"[bold]Loading XTTS v2 model[/bold] on device '[green]{device}[/green]'…"
     )
     try:
-        engine = XTTSVoiceEngine(language=language, device=device)
+        engine = XTTSVoiceEngine(
+            language=language, device=device, cpu_threads=cpu_threads,
+        )
     except ModelLoadError as exc:
         console.print(f"[red]Model load failed:[/] {exc}")
         raise typer.Exit(code=1)
@@ -353,12 +449,12 @@ def render(
             cache_dir=cache_dir,
             collect_audio=should_export,
             stream_gap_ms=stream_gap_ms,
-            stream_prebuffer_segments=stream_prebuffer,
+            stream_prebuffer_ms=stream_prebuffer_ms,
         )
         combined = None
         if should_export:
             try:
-                combined = build_podcast(segment_audio)
+                combined = build_podcast(segment_audio, normalize=not skip_normalize)
             except PodvoiceError as exc:
                 console.print(f"[red]Audio processing failed:[/] {exc}")
                 raise typer.Exit(code=1)
@@ -371,7 +467,7 @@ def render(
         )
 
         try:
-            combined = build_podcast(segment_audio)
+            combined = build_podcast(segment_audio, normalize=not skip_normalize)
         except PodvoiceError as exc:
             console.print(f"[red]Audio processing failed:[/] {exc}")
             raise typer.Exit(code=1)
@@ -385,7 +481,7 @@ def render(
 
     if should_export and out is not None:
         try:
-            export_audio(combined, out)
+            export_audio(combined, out, quality=quality)
         except PodvoiceError as exc:
             console.print(f"[red]Export failed:[/] {exc}")
             raise typer.Exit(code=1)
@@ -426,10 +522,21 @@ def benchmark(
         help="Language code for XTTS v2 (e.g. en, de, fr).",
     ),
     device: str = typer.Option(
-        "cpu",
+        "auto",
         "--device",
         "-d",
-        help="Torch device to run on (default: 'cpu'). Use 'cuda' if you have a GPU.",
+        help=(
+            "Torch device to run on. 'auto' (default) selects CUDA when "
+            "available and falls back to CPU."
+        ),
+    ),
+    cpu_threads: int | None = typer.Option(
+        None,
+        "--cpu-threads",
+        help=(
+            "Number of CPU threads for PyTorch inference. "
+            "Defaults to PyTorch/OS default when not set."
+        ),
     ),
     no_cache: bool = typer.Option(
         True,
@@ -468,6 +575,7 @@ def benchmark(
             raw_text = script.read_text(encoding="utf-8")
             segments = parse_markdown_script(raw_text, source=str(script))
             segments = merge_adjacent_segments(segments)
+            segments = chunk_segments(segments)
         except (OSError, ScriptParseError) as exc:
             console.print(f"[red]Benchmark parse failed:[/] {exc}")
             raise typer.Exit(code=1)
@@ -475,7 +583,9 @@ def benchmark(
 
         load_start = time.perf_counter()
         try:
-            engine = XTTSVoiceEngine(language=language, device=device)
+            engine = XTTSVoiceEngine(
+                language=language, device=device, cpu_threads=cpu_threads,
+            )
         except ModelLoadError as exc:
             console.print(f"[red]Benchmark model load failed:[/] {exc}")
             raise typer.Exit(code=1)
