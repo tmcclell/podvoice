@@ -106,6 +106,8 @@ def _stream_synthesize_and_play(
     no_cache: bool,
     cache_dir: Path | None,
     collect_audio: bool,
+    stream_gap_ms: int,
+    stream_prebuffer_segments: int,
 ) -> tuple[list[AudioSegment], int]:
     """Synthesize and play segments as they complete.
 
@@ -126,9 +128,12 @@ def _stream_synthesize_and_play(
     cache_hits = 0
     playback_queue: Queue[AudioSegment | None] = Queue()
     playback_errors: list[PodvoiceError] = []
-    gap = AudioSegment.silent(duration=300)
+    gap = AudioSegment.silent(duration=stream_gap_ms)
+    playback_start_event = threading.Event()
+    queued_count = 0
 
     def _play_worker() -> None:
+        playback_start_event.wait()
         while True:
             item = playback_queue.get()
             if item is None:
@@ -179,6 +184,12 @@ def _stream_synthesize_and_play(
 
                 playback_item = audio if idx == len(segments) - 1 else audio + gap
                 playback_queue.put(playback_item)
+                queued_count += 1
+                if (
+                    queued_count >= stream_prebuffer_segments
+                    or idx == len(segments) - 1
+                ):
+                    playback_start_event.set()
                 progress.update(task, advance=1)
 
                 if playback_errors:
@@ -187,6 +198,7 @@ def _stream_synthesize_and_play(
             console.print(f"[red]Synthesis failed:[/] {exc}")
             raise typer.Exit(code=1)
         finally:
+            playback_start_event.set()
             playback_queue.put(None)
             worker.join()
 
@@ -249,6 +261,16 @@ def render(
             "Disabled by default."
         ),
     ),
+    stream_gap_ms: int = typer.Option(
+        80,
+        "--stream-gap-ms",
+        help="Silence between streamed segments in milliseconds (default: 80).",
+    ),
+    stream_prebuffer: int = typer.Option(
+        3,
+        "--stream-prebuffer",
+        help="Number of segments to queue before starting stream playback.",
+    ),
 ) -> None:
     """Render a Markdown script into a single audio file."""
 
@@ -261,6 +283,14 @@ def render(
 
     if play and play_stream:
         console.print("[red]Error:[/] Use either --play or --play-stream, not both.")
+        raise typer.Exit(code=1)
+
+    if stream_gap_ms < 0:
+        console.print("[red]Error:[/] --stream-gap-ms must be >= 0.")
+        raise typer.Exit(code=1)
+
+    if stream_prebuffer < 0:
+        console.print("[red]Error:[/] --stream-prebuffer must be >= 0.")
         raise typer.Exit(code=1)
 
     should_export = out is not None
@@ -322,6 +352,8 @@ def render(
             no_cache=no_cache,
             cache_dir=cache_dir,
             collect_audio=should_export,
+            stream_gap_ms=stream_gap_ms,
+            stream_prebuffer_segments=stream_prebuffer,
         )
         combined = None
         if should_export:

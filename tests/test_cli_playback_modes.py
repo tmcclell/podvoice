@@ -93,6 +93,42 @@ class CliPlaybackModeTests(unittest.TestCase):
             self.assertNotEqual(0, result.exit_code)
             self.assertIn("Use either --play or --play-stream", result.output)
 
+    def test_render_rejects_negative_stream_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            script = self._write_script(tmp_dir)
+
+            result = self.runner.invoke(
+                cli.app,
+                [
+                    "render",
+                    str(script),
+                    "--play-stream",
+                    "--stream-gap-ms",
+                    "-1",
+                ],
+            )
+
+            self.assertNotEqual(0, result.exit_code)
+            self.assertIn("--stream-gap-ms must be >=", result.output)
+
+    def test_render_rejects_negative_stream_prebuffer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            script = self._write_script(tmp_dir)
+
+            result = self.runner.invoke(
+                cli.app,
+                [
+                    "render",
+                    str(script),
+                    "--play-stream",
+                    "--stream-prebuffer",
+                    "-1",
+                ],
+            )
+
+            self.assertNotEqual(0, result.exit_code)
+            self.assertIn("--stream-prebuffer must be >=", result.output)
+
 
 if __name__ == "__main__":
     unittest.main()

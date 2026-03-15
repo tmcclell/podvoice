@@ -277,8 +277,8 @@ podvoice render examples/demo.md --play --out output.wav
 | `--out`, `-o`      | Output `.wav` or `.mp3`   |
 | `--play`           | Play locally after render |
 | `--play-stream`    | Experimental live streaming playback during synthesis |
-| `--stream-gap-ms`  | Silence between streamed segments in ms (default: 80) |
-| `--stream-prebuffer` | Segments to queue before stream playback starts (default: 3) |
+| `--stream-gap-ms`  | Silence between streamed segments in ms (default: 80, must be `>= 0`) |
+| `--stream-prebuffer` | Segments to queue before stream playback starts (default: 3, must be `>= 0`) |
 | `--no-cache`       | Disable segment cache     |
 | `--cache-dir`      | Override cache directory  |
 | `--language`, `-l` | XTTS language code        |
@@ -295,10 +295,39 @@ Podvoice supports two optional playback modes in addition to file export:
 * `--play-stream` (experimental)
 	* Starts playback while later segments are still being synthesized.
 	* Useful for long scripts when you want faster time-to-first-audio.
+	* `--stream-prebuffer` controls startup behavior:
+		* Lower values start earlier but may be less smooth on slower machines.
+		* Higher values start later but can reduce underruns.
+	* `--stream-gap-ms` controls spacing between streamed chunks.
+		* Set to `0` for no extra fixed silence between chunks.
+		* Increase it if transitions sound abrupt.
 	* Timing and device behavior can vary by platform and backend.
 	* Tune pacing with:
 		* `--stream-prebuffer` to queue more segments before playback begins.
 		* `--stream-gap-ms` to reduce or increase fixed inter-segment silence.
+
+Validation notes:
+
+* Podvoice rejects negative values for `--stream-gap-ms` and `--stream-prebuffer`.
+* Podvoice rejects using `--play` and `--play-stream` together in the same command.
+
+Recommended stream tuning flow:
+
+```bash
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 3 --stream-gap-ms 80
+```
+
+If playback starts too late, lower prebuffer:
+
+```bash
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 1 --stream-gap-ms 80
+```
+
+If transitions feel abrupt, increase the stream gap:
+
+```bash
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 3 --stream-gap-ms 120
+```
 
 Reproducibility note:
 
