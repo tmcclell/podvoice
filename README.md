@@ -269,6 +269,10 @@ podvoice render examples/podcastprep.md --play-stream --stream-prebuffer-ms 4000
 ```
 
 ```bash
+podvoice render examples/podcastprep.md --play-stream --device cuda --language en
+```
+
+```bash
 podvoice render examples/demo.md --play --out output.wav
 ```
 
