@@ -696,7 +696,18 @@ def daemon_start(
         "auto",
         "--device",
         "-d",
-        help="Torch device ('cpu', 'cuda', or 'auto' to detect).",
+        help=(
+            "Torch device to run on. 'auto' (default) selects CUDA when "
+            "available and falls back to CPU."
+        ),
+    ),
+    cpu_threads: int | None = typer.Option(
+        None,
+        "--cpu-threads",
+        help=(
+            "Number of CPU threads for PyTorch inference. "
+            "Defaults to PyTorch/OS default when not set."
+        ),
     ),
 ) -> None:
     """Start the podvoice daemon (foreground).
@@ -707,6 +718,7 @@ def daemon_start(
     import logging
 
     from .daemon import PodvoiceDaemon
+    from .tts import _resolve_device, _apply_cpu_thread_settings
 
     logging.basicConfig(
         level=logging.INFO,
@@ -714,13 +726,9 @@ def daemon_start(
         datefmt="%H:%M:%S",
     )
 
-    if device == "auto":
-        try:
-            import torch
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            device = "cpu"
+    device = _resolve_device(device)
+    if device == "cpu":
+        _apply_cpu_thread_settings(cpu_threads)
 
     console.print(
         Panel.fit(

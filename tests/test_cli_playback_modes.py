@@ -1,20 +1,25 @@
+import sys
 import tempfile
 import unittest
 import importlib.util
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 if importlib.util.find_spec("pydub") is None or importlib.util.find_spec("typer") is None:
     raise unittest.SkipTest("CLI playback tests require pydub and typer.")
 
 from pydub import AudioSegment
+
+for _mod in ("TTS", "TTS.api", "torch"):
+    sys.modules.setdefault(_mod, MagicMock())
+
 from typer.testing import CliRunner
 
 from podvoice import cli
 
 
 class _FakeEngine:
-    def __init__(self, language: str = "en", device: str = "cpu") -> None:
+    def __init__(self, language: str = "en", device: str = "cpu", **kwargs) -> None:
         self.language = language
         self.device = device
 
@@ -121,13 +126,13 @@ class CliPlaybackModeTests(unittest.TestCase):
                     "render",
                     str(script),
                     "--play-stream",
-                    "--stream-prebuffer",
+                    "--stream-prebuffer-ms",
                     "-1",
                 ],
             )
 
             self.assertNotEqual(0, result.exit_code)
-            self.assertIn("--stream-prebuffer must be >=", result.output)
+            self.assertIn("--stream-prebuffer-ms must be >=", result.output)
 
 
 if __name__ == "__main__":

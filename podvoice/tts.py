@@ -7,6 +7,8 @@ interface suitable for CLI use.
 from __future__ import annotations
 
 import io
+import logging
+import os
 from pathlib import Path
 import wave
 
@@ -22,6 +24,58 @@ from .utils import (
     stable_hash,
     build_segment_cache_key,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_device(device: str | None) -> str:
+    """Resolve device string to an actual torch device name.
+
+    When *device* is ``None`` or ``"auto"``, CUDA is used if available,
+    otherwise CPU.  An explicit ``"cuda"`` request falls back to CPU
+    with a warning when CUDA is not available.
+    """
+
+    if device is None or device == "auto":
+        if torch.cuda.is_available():
+            logger.info("CUDA is available — selecting 'cuda' device.")
+            return "cuda"
+        logger.info("CUDA is not available — falling back to 'cpu'.")
+        return "cpu"
+
+    if device == "cuda" and not torch.cuda.is_available():
+        logger.warning(
+            "CUDA was explicitly requested but is not available. "
+            "Falling back to 'cpu'."
+        )
+        return "cpu"
+
+    logger.info("Using explicitly requested device '%s'.", device)
+    return device
+
+
+def _apply_cpu_thread_settings(cpu_threads: int | None) -> None:
+    """Configure PyTorch CPU thread counts for inference.
+
+    When *cpu_threads* is ``None`` the PyTorch / OS defaults are kept.
+    """
+
+    if cpu_threads is None:
+        count = os.cpu_count() or 1
+        logger.info(
+            "cpu_threads not set — keeping PyTorch defaults "
+            "(os.cpu_count()=%d).",
+            count,
+        )
+        return
+
+    torch.set_num_threads(cpu_threads)
+    torch.set_num_interop_threads(cpu_threads)
+    logger.info(
+        "Set torch num_threads=%d and num_interop_threads=%d.",
+        cpu_threads,
+        cpu_threads,
+    )
 
 
 class XTTSVoiceEngine:
@@ -40,14 +94,16 @@ class XTTSVoiceEngine:
         model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
         device: str | None = None,
         progress_bar: bool = False,
+        cpu_threads: int | None = None,
     ) -> None:
         self.language = language
         self.model_name = model_name
 
-        # Default to CPU for portability; users can explicitly request CUDA.
-        if device is None:
-            device = "cpu"
+        device = _resolve_device(device)
         self.device = device
+
+        if device == "cpu":
+            _apply_cpu_thread_settings(cpu_threads)
 
         try:
             # The TTS API accepts the model name positionally.

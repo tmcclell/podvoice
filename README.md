@@ -250,7 +250,7 @@ podvoice examples/demo.md --out output.wav
 ```
 
 ```bash
-podvoice examples/demo.md --out podcast.mp3 --language en --device cpu
+podvoice examples/demo.md --out podcast.mp3 --language en
 ```
 
 ```bash
@@ -282,7 +282,8 @@ podvoice render examples/demo.md --play --out output.wav
 | `--no-cache`       | Disable segment cache     |
 | `--cache-dir`      | Override cache directory  |
 | `--language`, `-l` | XTTS language code        |
-| `--device`, `-d`   | `cpu` (default) or `cuda` |
+| `--device`, `-d`   | `auto` (default), `cpu`, or `cuda` |
+| `--cpu-threads`    | CPU thread count for PyTorch (default: OS default) |
 
 ## Playback modes
 
@@ -360,13 +361,20 @@ This reports per-run and average timings for:
 
 ## GPU usage (optional)
 
-If you have a compatible NVIDIA GPU:
+Podvoice auto-detects CUDA when `--device auto` (the default).
+To force GPU usage:
 
 ```bash
 podvoice examples/demo.md --device cuda
 ```
 
 If CUDA is unavailable, Podvoice safely falls back to CPU.
+
+To control CPU thread count for inference:
+
+```bash
+podvoice examples/demo.md --device cpu --cpu-threads 4
+```
 
 ---
 
