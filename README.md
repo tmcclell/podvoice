@@ -242,6 +242,9 @@ Subsequent runs reuse the cache.
 podvoice SCRIPT.md --out OUTPUT
 ```
 
+Default behavior is unchanged: Podvoice renders and writes one stitched output file.
+Playback is optional and disabled by default.
+
 Examples:
 
 ```bash
@@ -252,16 +255,52 @@ podvoice examples/demo.md --out output.wav
 podvoice examples/demo.md --out podcast.mp3 --language en --device cpu
 ```
 
+```bash
+podvoice render examples/demo.md --play
+```
+
+```bash
+podvoice render examples/demo.md --play-stream
+```
+
+```bash
+podvoice render examples/demo.md --play --out output.wav
+```
+
 ### Options
 
 | Option             | Description               |
 | ------------------ | ------------------------- |
 | `SCRIPT`           | Input Markdown file       |
 | `--out`, `-o`      | Output `.wav` or `.mp3`   |
+| `--play`           | Play locally after render |
+| `--play-stream`    | Experimental live streaming playback during synthesis |
 | `--no-cache`       | Disable segment cache     |
 | `--cache-dir`      | Override cache directory  |
 | `--language`, `-l` | XTTS language code        |
 | `--device`, `-d`   | `cpu` (default) or `cuda` |
+
+## Playback modes
+
+Podvoice supports two optional playback modes in addition to file export:
+
+* `--play`
+	* Renders the full podcast and plays it through your local default speakers.
+	* If `--out` is omitted, playback-only mode is used and no file is written.
+
+* `--play-stream` (experimental)
+	* Starts playback while later segments are still being synthesized.
+	* Useful for long scripts when you want faster time-to-first-audio.
+	* Timing and device behavior can vary by platform and backend.
+
+Reproducibility note:
+
+* File export is the deterministic baseline for reproducible artifacts.
+* Live playback is local-device dependent and may vary in timing.
+
+Windows and VS Code note:
+
+* Running from the VS Code integrated terminal on Windows still uses the OS audio output device, so playback goes to your local speakers/headphones.
 
 ---
 

@@ -7,7 +7,9 @@ script and produces a single audio file.
 from __future__ import annotations
 
 from pathlib import Path
+from queue import Queue
 import tempfile
+import threading
 import time
 
 import typer
@@ -19,7 +21,7 @@ from rich.traceback import install as install_rich_traceback
 
 from .parser import parse_markdown_script, merge_adjacent_segments
 from .tts import XTTSVoiceEngine
-from .audio import build_podcast, export_audio
+from .audio import build_podcast, export_audio, play_audio
 from .utils import (
     PodvoiceError,
     ScriptParseError,
@@ -98,6 +100,103 @@ def _synthesize_with_cache(
     return segment_audio, cache_hits
 
 
+def _stream_synthesize_and_play(
+    engine: XTTSVoiceEngine,
+    segments,
+    no_cache: bool,
+    cache_dir: Path | None,
+    collect_audio: bool,
+) -> tuple[list[AudioSegment], int]:
+    """Synthesize and play segments as they complete.
+
+    This mode is intentionally best-effort and is exposed as an
+    experimental option because playback timing depends on local device
+    behavior.
+    """
+
+    resolved_cache_dir = cache_dir if cache_dir is not None else get_default_cache_dir()
+    if not no_cache:
+        try:
+            resolved_cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            console.print(f"[yellow]Warning:[/] Unable to initialize cache dir: {exc}")
+            no_cache = True
+
+    segment_audio: list[AudioSegment] = []
+    cache_hits = 0
+    playback_queue: Queue[AudioSegment | None] = Queue()
+    playback_errors: list[PodvoiceError] = []
+    gap = AudioSegment.silent(duration=300)
+
+    def _play_worker() -> None:
+        while True:
+            item = playback_queue.get()
+            if item is None:
+                break
+            try:
+                play_audio(item)
+            except PodvoiceError as exc:
+                playback_errors.append(exc)
+                break
+
+    worker = threading.Thread(target=_play_worker, daemon=True)
+    worker.start()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            "Synthesizing and streaming speech…", total=len(segments)
+        )
+
+        try:
+            for idx, segment in enumerate(segments):
+                cache_path: Path | None = None
+                if not no_cache:
+                    cache_key = engine.cache_key_for_segment(segment)
+                    cache_path = resolved_cache_dir / f"{cache_key}.wav"
+
+                if cache_path is not None and cache_path.exists():
+                    try:
+                        audio = AudioSegment.from_file(cache_path)
+                        cache_hits += 1
+                    except Exception:
+                        audio = engine.synthesize_to_audiosegment(segment)
+                else:
+                    audio = engine.synthesize_to_audiosegment(segment)
+
+                if collect_audio:
+                    segment_audio.append(audio)
+
+                if cache_path is not None and not cache_path.exists():
+                    try:
+                        audio.export(cache_path, format="wav")
+                    except Exception:
+                        pass
+
+                playback_item = audio if idx == len(segments) - 1 else audio + gap
+                playback_queue.put(playback_item)
+                progress.update(task, advance=1)
+
+                if playback_errors:
+                    break
+        except SynthesisError as exc:
+            console.print(f"[red]Synthesis failed:[/] {exc}")
+            raise typer.Exit(code=1)
+        finally:
+            playback_queue.put(None)
+            worker.join()
+
+    if playback_errors:
+        console.print(f"[red]Playback failed:[/] {playback_errors[0]}")
+        raise typer.Exit(code=1)
+
+    return segment_audio, cache_hits
+
+
 @app.command()
 def render(
     script: Path = typer.Argument(
@@ -137,6 +236,19 @@ def render(
         "--cache-dir",
         help="Override cache directory for synthesized segments.",
     ),
+    play: bool = typer.Option(
+        False,
+        "--play",
+        help="Play rendered audio locally. Disabled by default.",
+    ),
+    play_stream: bool = typer.Option(
+        False,
+        "--play-stream",
+        help=(
+            "Experimental: stream playback as segments are synthesized. "
+            "Disabled by default."
+        ),
+    ),
 ) -> None:
     """Render a Markdown script into a single audio file."""
 
@@ -147,12 +259,20 @@ def render(
         )
     )
 
-    if out is None:
+    if play and play_stream:
+        console.print("[red]Error:[/] Use either --play or --play-stream, not both.")
+        raise typer.Exit(code=1)
+
+    should_export = out is not None
+    if out is None and not (play or play_stream):
         out = script.with_suffix(".wav")
-    elif out.suffix.lower() not in {".wav", ".mp3"}:
+        should_export = True
+
+    if out is not None and out.suffix.lower() not in {".wav", ".mp3"}:
         # If the user provided a path without extension, default to WAV.
         if out.suffix == "":
             out = out.with_suffix(".wav")
+            should_export = True
         else:
             console.print(
                 "[red]Error:[/] Output path must end with .wav or .mp3.",
@@ -195,29 +315,58 @@ def render(
     # ------------------------------------------------------------------
     # Synthesize segments and stitch audio
     # ------------------------------------------------------------------
-    segment_audio, cache_hits = _synthesize_with_cache(
-        engine=engine,
-        segments=segments,
-        no_cache=no_cache,
-        cache_dir=cache_dir,
-    )
+    if play_stream:
+        segment_audio, cache_hits = _stream_synthesize_and_play(
+            engine=engine,
+            segments=segments,
+            no_cache=no_cache,
+            cache_dir=cache_dir,
+            collect_audio=should_export,
+        )
+        combined = None
+        if should_export:
+            try:
+                combined = build_podcast(segment_audio)
+            except PodvoiceError as exc:
+                console.print(f"[red]Audio processing failed:[/] {exc}")
+                raise typer.Exit(code=1)
+    else:
+        segment_audio, cache_hits = _synthesize_with_cache(
+            engine=engine,
+            segments=segments,
+            no_cache=no_cache,
+            cache_dir=cache_dir,
+        )
 
-    try:
-        combined = build_podcast(segment_audio)
-    except PodvoiceError as exc:
-        console.print(f"[red]Audio processing failed:[/] {exc}")
-        raise typer.Exit(code=1)
+        try:
+            combined = build_podcast(segment_audio)
+        except PodvoiceError as exc:
+            console.print(f"[red]Audio processing failed:[/] {exc}")
+            raise typer.Exit(code=1)
 
-    try:
-        export_audio(combined, out)
-    except PodvoiceError as exc:
-        console.print(f"[red]Export failed:[/] {exc}")
-        raise typer.Exit(code=1)
+        if play:
+            try:
+                play_audio(combined)
+            except PodvoiceError as exc:
+                console.print(f"[red]Playback failed:[/] {exc}")
+                raise typer.Exit(code=1)
+
+    if should_export and out is not None:
+        try:
+            export_audio(combined, out)
+        except PodvoiceError as exc:
+            console.print(f"[red]Export failed:[/] {exc}")
+            raise typer.Exit(code=1)
 
     if not no_cache:
         console.print(f"[dim]Cache hits:[/] {cache_hits}/{len(segments)}")
 
-    console.print(f"[green]Done.[/] Wrote [bold]{out}[/].")
+    if should_export and out is not None:
+        console.print(f"[green]Done.[/] Wrote [bold]{out}[/].")
+    elif play_stream:
+        console.print("[green]Done.[/] Streamed audio to local speakers.")
+    else:
+        console.print("[green]Done.[/] Played audio through local speakers.")
 
 
 @app.command()

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable, List
 
 from pydub import AudioSegment
+from pydub.playback import play as pydub_play
 
 from .utils import PodvoiceError
 
@@ -88,3 +89,15 @@ def export_audio(audio: AudioSegment, out_path: Path) -> None:
         audio.export(out_path, format=fmt)
     except Exception as exc:  # pragma: no cover - defensive
         raise PodvoiceError(f"Failed to export audio to '{out_path}': {exc}") from exc
+
+
+def play_audio(audio: AudioSegment) -> None:
+    """Play an :class:`AudioSegment` through the local default output device."""
+
+    try:
+        pydub_play(audio)
+    except Exception as exc:  # pragma: no cover - backend-dependent
+        raise PodvoiceError(
+            "Failed to play audio via local speakers. "
+            "Ensure an audio backend is available (e.g. ffplay/simpleaudio)."
+        ) from exc
