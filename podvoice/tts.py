@@ -6,13 +6,23 @@ interface suitable for CLI use.
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import Dict, Optional
+import wave
 
+import numpy as np
 import torch
 from TTS.api import TTS as CoquiTTS
+from pydub import AudioSegment
 
-from .utils import ModelLoadError, SynthesisError, Segment, stable_hash
+from .utils import (
+    ModelLoadError,
+    SynthesisError,
+    Segment,
+    stable_hash,
+    build_segment_cache_key,
+)
 
 
 class XTTSVoiceEngine:
@@ -63,6 +73,13 @@ class XTTSVoiceEngine:
 
         # Cache mapping from script speaker name -> internal XTTS speaker id.
         self._speaker_map: Dict[str, Optional[str]] = {}
+
+        # Best-effort output sample rate discovery for in-memory WAV encoding.
+        sample_rate = 24000
+        synthesizer = getattr(self._tts, "synthesizer", None)
+        if synthesizer is not None:
+            sample_rate = int(getattr(synthesizer, "output_sample_rate", sample_rate))
+        self.sample_rate = sample_rate
 
     # ------------------------------------------------------------------
     # Speaker mapping
@@ -120,3 +137,55 @@ class XTTSVoiceEngine:
             raise SynthesisError(
                 f"Failed to synthesize segment for speaker '{segment.speaker}': {exc}"
             ) from exc
+
+    def cache_key_for_segment(self, segment: Segment) -> str:
+        """Return a deterministic cache key for a segment synthesis result."""
+        return build_segment_cache_key(
+            model_name=self.model_name,
+            language=self.language,
+            speaker=segment.speaker,
+            emotion=segment.emotion,
+            text=segment.text,
+        )
+
+    def synthesize_to_audiosegment(self, segment: Segment) -> AudioSegment:
+        """Synthesize one segment and return audio in-memory as AudioSegment."""
+
+        speaker_id = self._map_script_speaker(segment.speaker)
+        kwargs = {
+            "text": segment.text,
+            "language": self.language,
+        }
+
+        try:
+            with torch.inference_mode():
+                if speaker_id is not None:
+                    wav = self._tts.tts(speaker=speaker_id, **kwargs)
+                else:
+                    wav = self._tts.tts(**kwargs)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise SynthesisError(
+                f"Failed to synthesize segment for speaker '{segment.speaker}': {exc}"
+            ) from exc
+
+        # Coqui may return list/ndarray/tensor. Normalize to float32 numpy.
+        if isinstance(wav, torch.Tensor):
+            wav = wav.detach().cpu().numpy()
+        arr = np.asarray(wav, dtype=np.float32).flatten()
+        if arr.size == 0:
+            raise SynthesisError(
+                f"Synthesis returned empty audio for speaker '{segment.speaker}'."
+            )
+
+        arr = np.clip(arr, -1.0, 1.0)
+        pcm16 = (arr * 32767.0).astype(np.int16)
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(self.sample_rate)
+            wav_file.writeframes(pcm16.tobytes())
+
+        buf.seek(0)
+        return AudioSegment.from_file(buf, format="wav")

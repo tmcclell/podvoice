@@ -29,37 +29,32 @@ def _normalize(audio: AudioSegment, target_dbfs: float = -20.0) -> AudioSegment:
 
 
 def build_podcast(
-    segment_paths: Iterable[Path],
+    segment_audio: Iterable[AudioSegment],
     gap_ms: int = 300,
     target_dbfs: float = -20.0,
 ) -> AudioSegment:
-    """Load, concatenate, and normalize a sequence of segment files.
+    """Concatenate and normalize a sequence of in-memory segments.
 
     Parameters
     ----------
-    segment_paths:
-        Paths to individual WAV files, in playback order.
+    segment_audio:
+        Audio segments in playback order.
     gap_ms:
         Duration of silence inserted between segments, in milliseconds.
     target_dbfs:
         Target loudness for normalization.
     """
 
-    paths: List[Path] = [Path(p) for p in segment_paths]
-    if not paths:
+    parts: List[AudioSegment] = list(segment_audio)
+    if not parts:
         raise PodvoiceError("No audio segments were generated.")
 
     combined = AudioSegment.silent(duration=0)
     gap = AudioSegment.silent(duration=gap_ms)
 
-    for idx, path in enumerate(paths):
-        try:
-            segment = AudioSegment.from_file(path)
-        except Exception as exc:  # pragma: no cover - defensive
-            raise PodvoiceError(f"Failed to load audio segment '{path}': {exc}") from exc
-
+    for idx, segment in enumerate(parts):
         combined += segment
-        if idx < len(paths) - 1:
+        if idx < len(parts) - 1:
             combined += gap
 
     return _normalize(combined, target_dbfs=target_dbfs)

@@ -258,8 +258,28 @@ podvoice examples/demo.md --out podcast.mp3 --language en --device cpu
 | ------------------ | ------------------------- |
 | `SCRIPT`           | Input Markdown file       |
 | `--out`, `-o`      | Output `.wav` or `.mp3`   |
+| `--no-cache`       | Disable segment cache     |
+| `--cache-dir`      | Override cache directory  |
 | `--language`, `-l` | XTTS language code        |
 | `--device`, `-d`   | `cpu` (default) or `cuda` |
+
+---
+
+## Benchmarking
+
+You can benchmark performance with phase-level timing breakdowns:
+
+```bash
+podvoice benchmark examples/demo.md --iterations 3 --no-cache
+```
+
+This reports per-run and average timings for:
+
+* Parse
+* Model load
+* Synthesis
+* Stitch
+* Export
 
 ---
 

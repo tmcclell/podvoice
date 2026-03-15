@@ -109,3 +109,25 @@ def parse_markdown_script(text: str, source: str = "<string>") -> List[Segment]:
         raise ScriptParseError(f"No speaker blocks were found in script {source}.")
 
     return segments
+
+
+def merge_adjacent_segments(segments: List[Segment]) -> List[Segment]:
+    """Merge adjacent segments when speaker and emotion are identical.
+
+    This reduces the number of expensive TTS inference calls while preserving
+    ordering and conversational flow.
+    """
+
+    if not segments:
+        return []
+
+    merged: List[Segment] = [segments[0]]
+
+    for segment in segments[1:]:
+        prev = merged[-1]
+        if segment.speaker == prev.speaker and segment.emotion == prev.emotion:
+            prev.text = f"{prev.text}\n\n{segment.text}"
+            continue
+        merged.append(segment)
+
+    return merged

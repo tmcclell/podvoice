@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 import hashlib
+import os
+from pathlib import Path
 
 
 class PodvoiceError(Exception):
@@ -58,3 +60,41 @@ def stable_hash(text: str) -> int:
 
     digest = hashlib.md5(text.encode("utf-8")).hexdigest()
     return int(digest, 16)
+
+
+def stable_sha256(text: str) -> str:
+    """Return a deterministic SHA256 hex digest for cache keys."""
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_segment_cache_key(
+    model_name: str,
+    language: str,
+    speaker: str,
+    emotion: Optional[str],
+    text: str,
+) -> str:
+    """Build a deterministic cache key for one synthesized segment."""
+
+    payload = "\n".join([model_name, language, speaker, emotion or "", text])
+    return stable_sha256(payload)
+
+
+def get_default_cache_dir() -> Path:
+    """Return the default cache directory path for podvoice.
+
+    Users can override this location with ``PODVOICE_CACHE_DIR``.
+    """
+
+    override = os.environ.get("PODVOICE_CACHE_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "podvoice" / "cache"
+
+    # Linux/macOS/other POSIX fallback.
+    return Path.home() / ".cache" / "podvoice"
