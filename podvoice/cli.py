@@ -20,6 +20,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.traceback import install as install_rich_traceback
 
 from .chunking import chunk_segments
+from .guardrails import LanguagePolicy, apply_language_policy
 from .parser import parse_markdown_script, merge_adjacent_segments
 from .tts import XTTSVoiceEngine
 from .audio import build_podcast, export_audio, play_audio
@@ -341,6 +342,15 @@ def render(
         "--quality",
         help="MP3 encoding quality preset: 'draft' (96k) or 'final' (192k).",
     ),
+    language_policy: str | None = typer.Option(
+        None,
+        "--language-policy",
+        help=(
+            "Language drift guardrail policy: 'warn' logs non-target "
+            "characters, 'fail' aborts on drift, 'sanitize' removes them. "
+            "Disabled by default."
+        ),
+    ),
     max_segment_chars: int = typer.Option(
         500,
         "--max-segment-chars",
@@ -386,6 +396,13 @@ def render(
         )
         raise typer.Exit(code=1)
 
+    _VALID_POLICIES = {"warn", "fail", "sanitize"}
+    if language_policy is not None and language_policy not in _VALID_POLICIES:
+        console.print(
+            f"[red]Error:[/] --language-policy must be one of {sorted(_VALID_POLICIES)}."
+        )
+        raise typer.Exit(code=1)
+
     should_export = out is not None
     if out is None and not (play or play_stream):
         out = script.with_suffix(".wav")
@@ -423,6 +440,21 @@ def render(
     if not segments:
         console.print("[red]Script did not contain any speaker segments.[/]")
         raise typer.Exit(code=1)
+
+    # ------------------------------------------------------------------
+    # Apply language guardrails
+    # ------------------------------------------------------------------
+    if language_policy is not None:
+        policy_enum = LanguagePolicy(language_policy)
+        try:
+            for i, segment in enumerate(segments):
+                info = f"segment {i + 1}: {segment.speaker}"
+                segment.text = apply_language_policy(
+                    segment.text, language, policy_enum, segment_info=info,
+                )
+        except ValueError as exc:
+            console.print(f"[red]Language policy violation:[/] {exc}")
+            raise typer.Exit(code=1)
 
     # ------------------------------------------------------------------
     # Load XTTS model
