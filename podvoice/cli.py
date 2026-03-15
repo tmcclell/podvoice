@@ -675,5 +675,128 @@ def benchmark(
     console.print(f"total:      {totals['total']/iterations:.2f}s")
 
 
+# -- Daemon sub-commands -----------------------------------------------
+
+daemon_app = typer.Typer(
+    help="Manage the podvoice daemon for amortized model loading."
+)
+app.add_typer(daemon_app, name="daemon")
+
+
+@daemon_app.command("start")
+def daemon_start(
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Host to bind to."
+    ),
+    port: int = typer.Option(8473, "--port", help="Port to listen on."),
+    language: str = typer.Option(
+        "en", "--language", "-l", help="Language code for XTTS v2."
+    ),
+    device: str = typer.Option(
+        "auto",
+        "--device",
+        "-d",
+        help="Torch device ('cpu', 'cuda', or 'auto' to detect).",
+    ),
+) -> None:
+    """Start the podvoice daemon (foreground).
+
+    The daemon loads the XTTS model once and serves render requests over
+    HTTP, amortizing the expensive model load across many invocations.
+    """
+    import logging
+
+    from .daemon import PodvoiceDaemon
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    if device == "auto":
+        try:
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
+
+    console.print(
+        Panel.fit(
+            f"Starting podvoice daemon on {host}:{port} (device={device})",
+            style="bold cyan",
+        )
+    )
+
+    try:
+        daemon = PodvoiceDaemon(
+            language=language,
+            device=device,
+            host=host,
+            port=port,
+        )
+    except ModelLoadError as exc:
+        console.print(f"[red]Model load failed:[/] {exc}")
+        raise typer.Exit(code=1)
+
+    daemon.start()
+
+
+@daemon_app.command("stop")
+def daemon_stop(
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Daemon host."
+    ),
+    port: int = typer.Option(8473, "--port", help="Daemon port."),
+) -> None:
+    """Stop a running podvoice daemon."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{host}:{port}/shutdown"
+    try:
+        req = urllib.request.Request(url, data=b"", method="POST")
+        resp = urllib.request.urlopen(req, timeout=5)
+        data = json.loads(resp.read())
+        console.print(
+            f"[green]Daemon shutting down:[/] {data.get('status', 'ok')}"
+        )
+    except urllib.error.URLError:
+        console.print(
+            f"[red]Error:[/] Could not connect to daemon at {host}:{port}."
+        )
+        raise typer.Exit(code=1)
+
+
+@daemon_app.command("status")
+def daemon_status(
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Daemon host."
+    ),
+    port: int = typer.Option(8473, "--port", help="Daemon port."),
+) -> None:
+    """Check if a podvoice daemon is running."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{host}:{port}/health"
+    try:
+        resp = urllib.request.urlopen(url, timeout=5)
+        data = json.loads(resp.read())
+        console.print("[green]Daemon is running.[/]")
+        console.print(f"  Model:    {data.get('model', 'unknown')}")
+        console.print(f"  Language: {data.get('language', 'unknown')}")
+        console.print(f"  Device:   {data.get('device', 'unknown')}")
+        console.print(f"  Uptime:   {data.get('uptime_seconds', 0):.1f}s")
+    except urllib.error.URLError:
+        console.print(
+            f"[yellow]Daemon is not running[/] at {host}:{port}."
+        )
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
