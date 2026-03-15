@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
-from typing import Dict, Optional
 import wave
 
 import numpy as np
@@ -39,7 +38,7 @@ class XTTSVoiceEngine:
         self,
         language: str = "en",
         model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
-        device: Optional[str] = None,
+        device: str | None = None,
         progress_bar: bool = False,
     ) -> None:
         self.language = language
@@ -72,7 +71,7 @@ class XTTSVoiceEngine:
         self._available_speakers = list(speakers)
 
         # Cache mapping from script speaker name -> internal XTTS speaker id.
-        self._speaker_map: Dict[str, Optional[str]] = {}
+        self._speaker_map: dict[str, str | None] = {}
 
         # Best-effort output sample rate discovery for in-memory WAV encoding.
         sample_rate = 24000
@@ -84,7 +83,7 @@ class XTTSVoiceEngine:
     # ------------------------------------------------------------------
     # Speaker mapping
     # ------------------------------------------------------------------
-    def _map_script_speaker(self, script_speaker: str) -> Optional[str]:
+    def _map_script_speaker(self, script_speaker: str) -> str | None:
         """Map a script speaker name to a concrete XTTS speaker identifier.
 
         The mapping is deterministic: the same script speaker name always

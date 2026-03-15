@@ -6,8 +6,10 @@ for simple peak normalization before exporting to the final format.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List
+import os
+import tempfile
 
 from pydub import AudioSegment
 from pydub.playback import play as pydub_play
@@ -46,7 +48,7 @@ def build_podcast(
         Target loudness for normalization.
     """
 
-    parts: List[AudioSegment] = list(segment_audio)
+    parts: list[AudioSegment] = list(segment_audio)
     if not parts:
         raise PodvoiceError("No audio segments were generated.")
 
@@ -93,6 +95,31 @@ def export_audio(audio: AudioSegment, out_path: Path) -> None:
 
 def play_audio(audio: AudioSegment) -> None:
     """Play an :class:`AudioSegment` through the local default output device."""
+
+    if os.name == "nt":
+        # Use stdlib winsound on Windows to avoid ffplay/simpleaudio backend
+        # issues in restricted environments.
+        try:
+            import winsound
+
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    suffix=".wav", delete=False
+                ) as tmp_wav:
+                    temp_path = tmp_wav.name
+                audio.export(temp_path, format="wav")
+                winsound.PlaySound(temp_path, winsound.SND_FILENAME)
+                return
+            finally:
+                if temp_path:
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
+        except Exception:
+            # Fall through to pydub backend if winsound path fails.
+            pass
 
     try:
         pydub_play(audio)

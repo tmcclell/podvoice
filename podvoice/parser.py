@@ -15,7 +15,6 @@ until the next ``[Speaker | emotion]`` header. Blank lines are allowed.
 from __future__ import annotations
 
 import re
-from typing import List
 
 from .utils import Segment, ScriptParseError
 
@@ -26,7 +25,7 @@ _HEADER_RE = re.compile(
 )
 
 
-def parse_markdown_script(text: str, source: str = "<string>") -> List[Segment]:
+def parse_markdown_script(text: str, source: str = "<string>") -> list[Segment]:
     """Parse a Markdown script into an ordered list of ``Segment`` objects.
 
     Parameters
@@ -39,7 +38,7 @@ def parse_markdown_script(text: str, source: str = "<string>") -> List[Segment]:
 
     lines = text.splitlines()
 
-    segments: List[Segment] = []
+    segments: list[Segment] = []
     current_speaker: str | None = None
     current_emotion: str | None = None
     current_lines: list[str] = []
@@ -111,7 +110,7 @@ def parse_markdown_script(text: str, source: str = "<string>") -> List[Segment]:
     return segments
 
 
-def merge_adjacent_segments(segments: List[Segment]) -> List[Segment]:
+def merge_adjacent_segments(segments: list[Segment]) -> list[Segment]:
     """Merge adjacent segments when speaker and emotion are identical.
 
     This reduces the number of expensive TTS inference calls while preserving
@@ -121,7 +120,7 @@ def merge_adjacent_segments(segments: List[Segment]) -> List[Segment]:
     if not segments:
         return []
 
-    merged: List[Segment] = [segments[0]]
+    merged: list[Segment] = [segments[0]]
 
     for segment in segments[1:]:
         prev = merged[-1]

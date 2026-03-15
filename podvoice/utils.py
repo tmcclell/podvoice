@@ -6,7 +6,6 @@ We keep this module intentionally small and beginner-friendly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 import hashlib
 import os
 from pathlib import Path
@@ -45,7 +44,7 @@ class Segment:
     """
 
     speaker: str
-    emotion: Optional[str]
+    emotion: str | None
     text: str
 
 
@@ -72,7 +71,7 @@ def build_segment_cache_key(
     model_name: str,
     language: str,
     speaker: str,
-    emotion: Optional[str],
+    emotion: str | None,
     text: str,
 ) -> str:
     """Build a deterministic cache key for one synthesized segment."""

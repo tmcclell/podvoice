@@ -114,7 +114,7 @@ https://github.com/user-attachments/assets/6f468a4f-c4c9-446c-a6b9-b365c3e7f131
 
 Required everywhere:
 
-* **Python 3.10.x**
+* **Python 3.10+** (3.10, 3.11, 3.12, or 3.13)
 * **ffmpeg**
 * Internet access **only for first run**
 * ~5–8 GB free disk space (model cache)
@@ -127,7 +127,7 @@ Required everywhere:
 
 ```bash
 sudo apt update
-sudo apt install -y python3.10 python3.10-venv ffmpeg git
+sudo apt install -y python3 python3-venv ffmpeg git
 ```
 
 ---
@@ -135,7 +135,7 @@ sudo apt install -y python3.10 python3.10-venv ffmpeg git
 #### 🍎 macOS (Homebrew)
 
 ```bash
-brew install python@3.10 ffmpeg git
+brew install python ffmpeg git
 ```
 
 ---
@@ -143,7 +143,7 @@ brew install python@3.10 ffmpeg git
 #### 🪟 Windows (PowerShell)
 
 ```powershell
-winget install Python.Python.3.10
+winget install Python.Python.3.13
 winget install ffmpeg
 winget install Git.Git
 ```
@@ -155,7 +155,7 @@ Restart the terminal after installing Python.
 #### 🐡 FreeBSD
 
 ```sh
-pkg install python310 ffmpeg git
+pkg install python3 ffmpeg git
 ```
 
 ---
@@ -178,15 +178,6 @@ chmod +x bootstrap.sh
 ./bootstrap.sh
 ```
 
-This script will:
-
-* Verify Python 3.10
-* Create a local `.venv`
-* Install fully pinned dependencies from `requirements.lock`
-* Install `podvoice` in editable mode
-
----
-
 ### 🪟 Windows (PowerShell)
 
 #### One-time: allow local scripts
@@ -200,6 +191,13 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```powershell
 .\bootstrap.ps1
 ```
+
+The bootstrap script will:
+
+* Detect your Python version (3.10+)
+* Use **uv** for instant setup if available, otherwise fall back to pip
+* Create a local `.venv`
+* Install `podvoice` in editable mode
 
 ---
 
@@ -264,6 +262,10 @@ podvoice render examples/demo.md --play-stream
 ```
 
 ```bash
+podvoice render examples/podcastprep.md --play-stream --stream-prebuffer 4 --stream-gap-ms 40
+```
+
+```bash
 podvoice render examples/demo.md --play --out output.wav
 ```
 
@@ -275,6 +277,8 @@ podvoice render examples/demo.md --play --out output.wav
 | `--out`, `-o`      | Output `.wav` or `.mp3`   |
 | `--play`           | Play locally after render |
 | `--play-stream`    | Experimental live streaming playback during synthesis |
+| `--stream-gap-ms`  | Silence between streamed segments in ms (default: 80) |
+| `--stream-prebuffer` | Segments to queue before stream playback starts (default: 3) |
 | `--no-cache`       | Disable segment cache     |
 | `--cache-dir`      | Override cache directory  |
 | `--language`, `-l` | XTTS language code        |
@@ -292,6 +296,9 @@ Podvoice supports two optional playback modes in addition to file export:
 	* Starts playback while later segments are still being synthesized.
 	* Useful for long scripts when you want faster time-to-first-audio.
 	* Timing and device behavior can vary by platform and backend.
+	* Tune pacing with:
+		* `--stream-prebuffer` to queue more segments before playback begins.
+		* `--stream-gap-ms` to reduce or increase fixed inter-segment silence.
 
 Reproducibility note:
 
