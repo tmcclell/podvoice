@@ -27,6 +27,37 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+# Speakers whose conditioning latents are trained on English-language data.
+# Curated from the XTTS v2 default speaker list.  Speakers with non-English
+# surname origins (e.g. Hayasaka, Mataracı, Rudaski) tend to bias the GPT
+# toward their native language even when ``language="en"`` is requested.
+_ENGLISH_SAFE_SPEAKERS: set[str] = {
+    "Claribel Dervla",
+    "Daisy Studious",
+    "Gracie Wise",
+    "Brenda Stern",
+    "Andrew Chipper",
+    "Craig Gutsy",
+    "Damien Black",
+    "Nova Hogarth",
+    "Narelle Moon",
+    "Barbora MacLean",
+    "Rosemary Okafor",
+    "Chandra MacFarland",
+    "Camilla Holmström",
+    "Szofi Granger",
+    "Aaron Dreschner",
+    "Abrahan Mack",
+    "Damjan Chapman",
+    "Filip Traverse",
+}
+
+
+def _english_safe_speakers(all_speakers: list[str]) -> list[str]:
+    """Return only speakers known to produce clean English output."""
+    safe = [s for s in all_speakers if s in _ENGLISH_SAFE_SPEAKERS]
+    return safe if safe else all_speakers
+
 
 def _resolve_device(device: str | None) -> str:
     """Resolve device string to an actual torch device name.
@@ -124,7 +155,25 @@ class XTTSVoiceEngine:
         # If this list is missing or empty, we simply let XTTS choose its
         # default voice for all segments.
         speakers = getattr(self._tts, "speakers", None) or []
-        self._available_speakers = list(speakers)
+        all_speakers = list(speakers)
+
+        # When targeting English, restrict to speakers whose conditioning
+        # latents come from English-language data.  Speakers trained on
+        # other languages (identifiable by non-English surname origins)
+        # can pull the autoregressive GPT toward that language even when
+        # ``language="en"`` is set, causing audible language drift.
+        if language == "en" and all_speakers:
+            self._available_speakers = _english_safe_speakers(all_speakers)
+            if not self._available_speakers:
+                # Fallback: if filtering removed everyone, keep them all.
+                self._available_speakers = all_speakers
+            logger.info(
+                "Filtered speakers for English: %d/%d available.",
+                len(self._available_speakers),
+                len(all_speakers),
+            )
+        else:
+            self._available_speakers = all_speakers
 
         # Cache mapping from script speaker name -> internal XTTS speaker id.
         self._speaker_map: dict[str, str | None] = {}
@@ -210,6 +259,12 @@ class XTTSVoiceEngine:
         kwargs = {
             "text": segment.text,
             "language": self.language,
+            # Lower temperature and raise repetition_penalty to reduce
+            # cross-language drift that XTTS v2 can exhibit during
+            # autoregressive generation.
+            "temperature": 0.5,
+            "repetition_penalty": 15.0,
+            "top_p": 0.8,
         }
 
         try:
